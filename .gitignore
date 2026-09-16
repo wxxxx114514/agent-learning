@@ -1,0 +1,35 @@
+# Python 字节码缓存（每章 demo 运行后都会生成）
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境（本课程零第三方依赖，正常情况下不需要）
+.venv/
+venv/
+env/
+
+# 演示产生的临时检查点 / 草稿目录
+# 第 13 章的检查点演示会写这类目录；正确做法是写进 tempfile，
+# 这里兜底忽略，避免误提交到仓库。
+.scratch*/
+*.tmp
+.tmp-*.json
+
+# Notebook 生成器执行代码单元时的临时脚本目录（用完自动清理）
+.nbverify/
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# 操作系统
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 真实模型的 API Key 千万不要写进文件 —— 只放环境变量。
+# 如果确实需要本地配置，用 .env 并确保它被忽略：
+.env
+.env.*
