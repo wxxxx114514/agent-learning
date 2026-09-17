@@ -542,14 +542,20 @@ def _safe_calc(expr: str) -> str:
 def _safe_path(workspace: Path, rel: str) -> Path:
     """路径穿越防护：把相对路径解析后，必须仍在工作目录内。
 
-    ★ 为什么不能只检查 "../"？
+    ★ 第一层：为什么不能只检查 "../"？
         因为攻击者可以用 `....//`、URL 编码、符号链接、Windows 的
-        `..\\` 和绝对路径 `C:\\Windows\\...` 绕过字符串检查。
-        唯一可靠的做法是**解析成绝对路径后比较前缀**。
+        `..\\` 和绝对路径 `C:\\Windows\\...` 绕过字符串检查 ——
+        **路径的等价写法是无穷的**，所以先 resolve() 成唯一的绝对路径。
+
+    ★★ 第二层：解析成绝对路径之后，**也不能用 startswith 比前缀**。
+        字符串前缀不是目录边界：root 是 `D:\\ws\\sandbox` 时，
+        兄弟目录 `D:\\ws\\sandbox_evil` 的字符串同样以它开头，
+        于是 `../sandbox_evil/x.txt` 会被前缀检查**放行**（越界成功）。
+        目录归属要按路径语义判断：`Path.is_relative_to()`（Python 3.9+）。
     """
     root = Path(workspace).resolve()
     p = (root / rel).resolve()
-    if not str(p).startswith(str(root)):
+    if not p.is_relative_to(root):
         raise ValueError(f"拒绝访问工作目录之外的路径: {rel}")
     return p
 
@@ -573,6 +579,7 @@ def demo_security() -> None:
     print("\n\n  ② 路径穿越防护：沙箱边界\n")
     workspace = ROOT / "stages" / "stage02_tools"
     for rel in ["notes.md", "../stage01_agent_loop/demo.py",
+                "../stage02_tools_evil/x.md",
                 "../../../Windows/System32/drivers/etc/hosts", "/etc/passwd"]:
         try:
             p = _safe_path(workspace, rel)
@@ -580,8 +587,10 @@ def demo_security() -> None:
         except Exception as exc:
             kv(f"路径 {rel!r}", f"⛔ 已拒绝：{exc}")
     print()
-    note("注意绝对路径 '/etc/passwd' 也会被拦住 —— 因为 root / '/etc/passwd' 仍解析到 root 下，")
-    note("而 '..' 逃逸会被前缀比较抓住。**永远不要用字符串包含来判断路径安全。**")
+    note("注意 '../stage02_tools_evil/x.md' 这条：它解析到**兄弟目录**，字符串照样以 root 开头 ——")
+    note("用 startswith 比前缀会放行它，用 is_relative_to 才拦得住。这就是前缀不是目录边界。")
+    note("绝对路径 '/etc/passwd' 也被拦住：pathlib 里 root / '/etc/passwd' 会**替换**掉 root，")
+    note("得到 D:/etc/passwd，本来就在工作目录之外。**永远不要用字符串前缀判断路径安全。**")
 
     print("\n\n  ③ 结果截断：防止一次工具调用撑爆上下文\n")
     huge = "日志行\n" * 5000            # 约 2 万字符
@@ -746,7 +755,8 @@ def run_checks() -> list[tuple[str, bool, str]]:
     # --- 验收 7：路径穿越被拒绝 ---
     ws = ROOT / "stages" / "stage02_tools"
     for rel, label in [("../stage01_agent_loop/demo.py", "相对路径逃逸"),
-                       ("../../../../etc/passwd", "多级逃逸")]:
+                       ("../../../../etc/passwd", "多级逃逸"),
+                       ("../stage02_tools_evil/x.md", "兄弟目录前缀绕过")]:
         try:
             _safe_path(ws, rel)
             blocked = False

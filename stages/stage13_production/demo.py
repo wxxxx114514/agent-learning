@@ -641,7 +641,7 @@ def demo_breaker() -> dict:
     kv("  推进 30s 后 allow()", allowed)
     kv("  熔断器状态", breaker.state)
     if breaker.state == CircuitBreaker.HALF_OPEN:
-        ok("进入 HALF_OPEN：只放一个探测请求，成功才恢复，失败就重新熔断。")
+        ok("进入 HALF_OPEN：**应当**只放一个探测请求 —— 但当前实现是无条件放行（练习 4）。")
     print()
     breaker.record_failure("探测又失败")
     kv("  探测失败后", f"{breaker.state}（retry_after={breaker.retry_after():.1f}s）")

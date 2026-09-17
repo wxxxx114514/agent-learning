@@ -197,7 +197,7 @@ print("     用户看到 500，而前面几圈的工作全部白做。")''')
 | `type` | 参数的类型（`string` / `integer` / `number` / `boolean` / `array` / `object`） | 没法判断类型对不对 |
 | `properties` | 每个参数的说明 | 模型不知道要传什么 |
 | `required` | 必填清单 | 模型漏填时你只能等函数报 `TypeError` |
-| `additionalProperties: False` | **拒绝一切未定义参数** | 模型幻觉出的 `unit`、`currency` 会被静默吞掉，行为不可预测 |
+| `additionalProperties: False` | **拒绝一切未定义参数** | 幻觉出的 `unit`、`currency` 会一路传到 `func(**args)` 并抛 `TypeError`（原始报错，模型看不懂）；带 `**kwargs` 才真被静默吞掉 |
 
 > 最后一条最容易被忽视，也最值钱。模型非常喜欢"多加一个参数显得自己很懂"——
 > 比如算数时顺手传 `unit="元"`。不开这个开关，`**args` 会把多余参数静默吃掉；
@@ -579,19 +579,33 @@ if ".." in path:
 
 字符串检查永远输，因为**路径的等价写法是无穷的**。
 
-### 所以我需要一个「把路径解析成唯一形式」的工具
+### 所以我需要两个东西：解析 + 判归属
 
-`pathlib.Path.resolve()` —— 它把路径里的 `.`、`..`、符号链接全部解析掉，
-得到一个**唯一的绝对路径**。然后我们只做一件事：**比较前缀**。
+**第一个：`pathlib.Path.resolve()`** —— 它把路径里的 `.`、`..`、符号链接全部解析掉，
+得到一个**唯一的绝对路径**。到这一步，`....//`、混合斜杠、URL 编码这些花样就全没了。
+
+**第二个：判断这个绝对路径「属不属于」工作目录 —— 这里有个坑。**
+
+很多人会写 `str(p).startswith(str(root))` 比前缀。但**字符串前缀不是目录边界**：
+
+```
+root  =  D:\\ws\\sandbox
+p     =  D:\\ws\\sandbox_evil\\x.txt   ← 兄弟目录，字符串照样以 root 开头
+```
+
+于是 `../sandbox_evil/x.txt` 会被前缀检查**放行** —— 越界成功。
+（有意思的是：多级 `..` 逃逸反而挡得住，所以这个洞在测试里特别容易漏。）
+
+正确做法是按**路径语义**判断归属，不是比字符串：
 
 ```python
-p = (root / rel).resolve()      # 解析成绝对路径
-if not str(p).startswith(str(root.resolve())):
+p = (root / rel).resolve()          # ① 解析成唯一的绝对路径
+if not p.is_relative_to(root):      # ② 按路径组件判归属（Python 3.9+）
     raise ValueError("拒绝访问工作目录之外的路径")
 ```
 
-这个判断是**可靠**的，因为它比较的是解析后的规范形式，
-不管攻击者用多少个点、什么斜杠、怎么编码，最终都会落到某个绝对路径上。
+> `is_relative_to()` 是 Python 3.9+ 的标准库方法，本项目要求 3.10+，可以直接用。
+> 等价写法：`os.path.commonpath([root, p]) == str(root)`。
 
 ### 立刻用一次""")
 
@@ -614,8 +628,8 @@ def safe_path(rel: str) -> pathlib.Path:
     越界时抛 ValueError
     """
     root = workspace.resolve()
-    p = (root / rel).resolve()          # ★ 关键：解析成规范绝对路径
-    if not str(p).startswith(str(root)):
+    p = (root / rel).resolve()          # ① 解析成规范绝对路径
+    if not p.is_relative_to(root):      # ② 判归属 —— 不用字符串前缀
         raise ValueError(f"拒绝访问工作目录之外的路径: {rel}")
     return p
 
@@ -626,7 +640,8 @@ print("非法路径（全部被拒绝）：")
 for bad in ["../outside.txt",
             "../../../../etc/passwd",
             "....//....//etc/passwd",
-            "subdir/../../escape.txt"]:
+            "subdir/../../escape.txt",
+            "../.nb02_sandbox_evil/x.txt"]:     # ★ 兄弟目录：专抓「比前缀」的洞
     try:
         p = safe_path(bad)
         print(f"   没拦住: {bad} -> {p}")
@@ -642,8 +657,8 @@ print(f"   内容是：{p.read_text(encoding='utf-8')}")
 # 清理演示目录
 shutil.rmtree(workspace, ignore_errors=True)
 print()
-print("★ 注意那条可靠的判断：resolve() 之后比前缀。")
-print("  绝不用「字符串包含」判断路径安全性。")''')
+print("★ 判断路径安全要两步：先 resolve() 解析，再 is_relative_to() 判归属。")
+print("  字符串前缀不是目录边界 —— 兄弟目录能骗过 startswith。")''')
 
     nb.md("""### 还有一个容易忽略的保护：结果截断
 
@@ -692,7 +707,7 @@ print("★ 截断提示本身也是给模型的信息：它知道结果不完整
 |---|---|
 | 参数写错 | JSON Schema 校验（②） |
 | 参数恶意（表达式注入） | AST 白名单（③） |
-| 参数恶意（路径穿越） | `resolve()` 后比前缀（④） |
+| 参数恶意（路径穿越） | `resolve()` 后判目录归属 `is_relative_to()`（④） |
 | 结果撑爆上下文 | `max_result_chars` 截断（④） |
 | 工具自己崩了 | 还没做 —— 下一节 |
 
@@ -994,13 +1009,14 @@ print("  这就是「按场景给最小工具集」的具体做法。")''')
 
     pitfall_table(nb, [
         ("用 `eval` 实现计算器", "提示词注入可执行任意代码", "AST 白名单，或 `ast.literal_eval`"),
-        ("忘记 `additionalProperties: false`", "模型的幻觉参数被静默吞掉，行为不可预测",
+        ("忘记 `additionalProperties: false`", "幻觉参数一路传到函数调用才炸（TypeError 或静默吞掉）",
          "显式关闭"),
         ("`bool` 被判为合法 `integer`", "`{\"expr\": true}` 通过校验并执行",
          "特判 `isinstance(value, bool)`"),
         ("参数校验放在执行之后", "副作用已经产生才报错", "校验必须在执行**之前**"),
-        ("用字符串包含判断路径安全", "`....//`、符号链接、绝对路径都能绕过",
-         "`resolve()` 后比前缀"),
+        ("用字符串判断路径安全（含 `startswith` 比前缀）",
+         "`....//`、符号链接、绝对路径能绕过；**兄弟目录**连前缀都能骗过",
+         "`resolve()` 后 `is_relative_to()` 判归属"),
         ("把原始异常回灌给模型", "模型看不懂 `missing 1 required positional argument`",
          "转写成「缺哪个参数 + 正确用法」"),
         ("工具异常向上抛", "整轮任务崩溃", "兜底 `except Exception` -> 结构化结果"),
@@ -1016,7 +1032,7 @@ print("  这就是「按场景给最小工具集」的具体做法。")''')
         "**模型输出是不可信输入。** 校验必须在执行之前 —— 没被执行，就没有副作用。",
         "**白名单，不是黑名单。** 黑名单永远堵不完（等价写法无穷多）；白名单默认拒绝。",
         "**`bool` 是 `int` 的子类** —— 不特判的话 `{\"expr\": true}` 会通过类型校验。",
-        "**路径安全靠 `resolve()` 后比前缀**，不是字符串包含判断。",
+        "**路径安全 = `resolve()` 解析 + `is_relative_to()` 判归属** —— 字符串前缀不是目录边界。",
         "**失败也是一种结果。** 错误信息要含「哪里错了 + 正确用法 + 可用替代」，"
         "它是写给模型的下一条上下文。",
         "**工具不是越多越好。** 超过 ~20 个就该做工具检索或按场景裁剪。",
@@ -1037,10 +1053,11 @@ print("  这就是「按场景给最小工具集」的具体做法。")''')
          "把 `calc` 的 schema 里 `\"additionalProperties\": False` 删掉，"
          "然后传 `{\"expr\": \"1+1\", \"unit\": \"元\"}`。\n\n"
          "观察：错误还会被报出来吗？模型还能知道参数错了吗？",
-         "删掉之后校验会通过，多余的 `unit` 会被 `**args` 静默接受，"
-         "模型**永远不知道自己错了**。\n\n"
+         "删掉之后校验会通过，多余的 `unit` 会一路传到函数调用："
+         "函数签名接不住就抛 `TypeError`，带 `**kwargs` 则被静默吞掉 —— "
+         "两种情况模型都**得不到一条能看懂的纠正**。\n\n"
          "这就是「护栏拆掉后问题反而更难查」的典型例子 —— "
-         "错误被静默吞掉比报错更危险。"),
+         "错误在调用之后才炸、而且炸得看不懂，比在调用之前被拦住危险得多。"),
 
         ("**给 AST 白名单加 DoS 防护并验证。**\n\n"
          "现有实现对 `**` 的指数做了限制。试试这些，看白名单是否足够：\n"

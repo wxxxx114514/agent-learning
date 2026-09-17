@@ -36,6 +36,7 @@ from core.mock_llm import (  # noqa: E402
 )
 from core.parser import parse_output, parse_tool_calls  # noqa: E402
 from core.prompts import PromptBuilder  # noqa: E402
+from core.real_llm import OpenAICompatLLM  # noqa: E402
 from core.tool import ToolRegistry, ToolSpec, build_default_registry, validate_schema  # noqa: E402
 
 
@@ -208,9 +209,18 @@ class TestToolRegistry(unittest.TestCase):
             self.assertFalse(r.ok, f"{payload} 应当被拒绝")
 
     def test_path_traversal_blocked(self):
-        r = self.reg.execute("read_file", {"path": "../../../../etc/passwd"})
-        self.assertFalse(r.ok)
-        self.assertIn("拒绝", r.error)
+        """越界路径必须被拒绝 —— 含"兄弟目录前缀绕过"这条回归用例。
+
+        ★ 为什么必须有第二条：早期版本用 `str.startswith(str(root))` 判前缀。
+          root 是 `.../agent-learning` 时，兄弟目录 `.../agent-learning_evil`
+          的字符串同样以它开头，前缀检查会**放行** —— 多级 `..` 逃逸挡得住，
+          这一条挡不住。改成 `Path.is_relative_to()` 后才真正拦住。
+        """
+        sibling = f"../{ROOT.name}_evil/x.txt"          # 解析后是 root 的兄弟目录
+        for bad in ["../../../../etc/passwd", sibling]:
+            r = self.reg.execute("read_file", {"path": bad})
+            self.assertFalse(r.ok, f"{bad} 应当被拒绝")
+            self.assertIn("拒绝", r.error, f"{bad} 应当报'拒绝访问'，而不是别的原因")
 
     def test_result_truncation(self):
         spec = ToolSpec(name="big", description="x",
@@ -468,6 +478,57 @@ class TestAgentLoop(unittest.TestCase):
         ])
         r = Agent(llm=llm, max_steps=4, verbose=False, context_char_limit=1200).run("统计")
         self.assertEqual(r.stop_reason, "final_answer")
+
+    def test_function_calling_style_passes_tools_to_llm(self):
+        """style="function_calling" 时，工具规格必须作为 API 参数下发。
+
+        ★ 回归测试：早期 `core/agent.py` 只传 messages，于是
+          `real_llm.py` 的 tools 分支和 `tool.py` 的 `openai_tools()`
+          全是**死代码** —— 代码和文档各说各话，谁也没发现。
+        """
+        seen: list[dict] = []
+
+        class Recorder(LLM):
+            name = "recorder"
+
+            def _complete(self, messages, **kwargs):
+                seen.append(kwargs)
+                return LLMResponse(text="Thought: 不用工具。\nFinal Answer: 好的")
+
+        reg = build_default_registry(ROOT)
+        Agent(llm=Recorder(), tools=reg,
+              prompt=PromptBuilder(style="function_calling"),
+              max_steps=2, verbose=False).run("你好")
+        self.assertTrue(seen, "模型应当至少被调用一次")
+        self.assertIn("tools", seen[0], "原生 function calling 必须下发 tools")
+        self.assertIn("calc", [t["function"]["name"] for t in seen[0]["tools"]])
+        self.assertEqual(seen[0]["tool_choice"], "auto")
+
+    def test_react_style_does_not_pass_tools_to_llm(self):
+        """文本协议走系统提示词，不该下发 tools（否则干扰服务商 / 老端点报错）。"""
+        seen: list[dict] = []
+
+        class Recorder(LLM):
+            name = "recorder"
+
+            def _complete(self, messages, **kwargs):
+                seen.append(kwargs)
+                return LLMResponse(text="Thought: 不用工具。\nFinal Answer: 好的")
+
+        Agent(llm=Recorder(), prompt=PromptBuilder(style="react"),
+              max_steps=2, verbose=False).run("你好")
+        self.assertTrue(seen)
+        self.assertNotIn("tools", seen[0], "react 风格不该下发 tools")
+
+    def test_real_llm_payload_carries_tools(self):
+        """真实适配器的请求体要带上 tools / tool_choice（离线验证，不发网络请求）。"""
+        llm = OpenAICompatLLM(api_key="sk-test", base_url="https://example.invalid/v1")
+        body = llm._payload([Message.user("hi")],
+                            tools=build_default_registry(ROOT).openai_tools(),
+                            tool_choice="auto")
+        self.assertIn("tools", body)
+        self.assertEqual(body["tool_choice"], "auto")
+        self.assertIn("calc", [t["function"]["name"] for t in body["tools"]])
 
 
 # ===========================================================================

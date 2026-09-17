@@ -182,7 +182,9 @@ class CircuitBreaker:
 
         CLOSED     正常放行，统计失败
         OPEN       一律拒绝，不再打下游（快速失败）
-        HALF_OPEN  只放**一个**探测请求过去：成功→恢复；失败→重新计时
+        HALF_OPEN  **应当**只放一个探测请求过去：成功→恢复；失败→重新计时
+                   ★ 当前实现没有强制这一点 —— allow() 在 HALF_OPEN 下无条件放行，
+                     并发来了会全部放过去。补上它是 README 的练习 4。
 
     为什么 HALF_OPEN 只放一个？
         如果放一批，而下游还是坏的，你就又把它打死了 —— 这叫"熔断抖动"。
@@ -213,7 +215,8 @@ class CircuitBreaker:
                 return True
             self.short_circuited += 1
             return False
-        return True   # HALF_OPEN：放探测请求
+        # HALF_OPEN：本应"只放一个探测"，但这里是无条件放行 —— 见类文档串的 ★
+        return True
 
     def retry_after(self) -> float:
         """还要等多久才可能恢复（给用户一个诚实的估计，而不是让他盲等）。"""
@@ -605,6 +608,9 @@ class ProductionRuntime:
         #   直接用客户端 key 会让"另一个用户碰巧用了同样的 key"错误命中缓存
         #   —— 那等于把钱记到别人头上。见 IdempotencyCache.cache_key 的注释。
         ck = IdempotencyCache.cache_key(req.idempotency_key, req.user_id, req.task)
+        # 注意：这里是 get-then-execute，**不是原子操作** —— 并发下同一个键可能被算两次。
+        # 这一层省的是**钱**，不是**正确性**；正确性归副作用层的唯一键
+        # （生产里是数据库唯一索引 / Redis SETNX，见 README 1.3 与第 3 层说明）。
         hit = self.cache.get(ck)
         if hit is not None:
             self.metrics.incr("duplicates_blocked")

@@ -286,9 +286,16 @@ class Agent:
     # ---- 内部：模型调用与重试 -----------------------------------------
     def _call_llm_with_retry(self, step: StepRecord) -> tuple[LLMResponse | None, str]:
         note = ""
+        # ★ 原生 function calling 的工具规格必须走 API 的 `tools` 参数下发，
+        #   而不是塞进提示词 —— 这是"原生"和"文本协议"的根本区别。
+        #   只有 style="function_calling" 时才带：文本协议下带了会干扰服务商，
+        #   也可能让不支持 tools 的兼容端点直接报错。
+        extra: dict[str, Any] = {}
+        if getattr(self.prompt, "style", "") == "function_calling":
+            extra = {"tools": self.tools.openai_tools(), "tool_choice": "auto"}
         for attempt in range(1, self.max_llm_retries + 2):
             try:
-                resp = self.llm.complete(self.conversation.messages)
+                resp = self.llm.complete(self.conversation.messages, **extra)
                 if attempt > 1:
                     note = f"第 {attempt} 次尝试成功（前面失败 {attempt - 1} 次）"
                 return resp, note

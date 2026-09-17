@@ -117,5 +117,5 @@ py scripts\build_notebooks.py --check      # 只校验已生成的 .ipynb 是否
 ```powershell
 py scripts\build_notebooks.py --check      # Notebook 是否仍合法
 py scripts\check_structure.py              # 章节材料是否齐全
-py scripts\run_all_checks.py               # 271 项验收标准是否仍通过
+py scripts\run_all_checks.py               # 272 项验收标准是否仍通过
 ```

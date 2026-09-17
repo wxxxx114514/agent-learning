@@ -545,9 +545,16 @@ def build_default_registry(workspace: str | Path = ".") -> ToolRegistry:
 
     # ---- 工具 4/5：受限文件读写（沙箱） -------------------------------
     def _safe_path(path: str) -> Path:
-        """路径穿越防护：只允许访问 workspace 内部。"""
+        """路径穿越防护：只允许访问 workspace 内部。
+
+        ★ 为什么用 is_relative_to() 而不是 str.startswith()？
+          因为字符串前缀**不是目录边界**：root 是 `D:\\ws\\sandbox` 时，
+          兄弟目录 `D:\\ws\\sandbox_evil` 的字符串同样以它开头，
+          于是 `../sandbox_evil/x` 会被前缀检查**放行**（越界成功）。
+          `Path.is_relative_to()`（Python 3.9+）按路径组件判断归属，没有这个洞。
+        """
         p = (root / path).resolve()
-        if not str(p).startswith(str(root)):
+        if not p.is_relative_to(root):
             raise ToolError(f"拒绝访问工作目录之外的路径: {path}")
         return p
 

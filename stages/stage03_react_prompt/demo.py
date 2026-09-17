@@ -543,8 +543,12 @@ def demo_protocol_comparison() -> None:
          "可靠性最低、消耗 token（格式说明很长）、容易解析失败"),
         ("原生 Function Calling", "解析 API 返回的 tool_calls 字段", "可靠性最高、格式由厂商保证",
          "绑定厂商、模型受限、调试时看不到「黑盒」决策"),
-        ("约束解码 / JSON Mode", "强制模型只能输出合法 JSON", "格式 100% 合法",
-         "表达力受限、部分服务商不提供"),
+        ("JSON Mode", "强制模型输出合法 JSON（`response_format={\"type\":\"json_object\"}`）",
+         "保证能被 `json.loads()` 解析",
+         "**不保证字段符合你的 Schema**（可能缺字段、类型不对、枚举乱写）"),
+        ("严格结构化输出（strict）", "把 Schema 编译成语法，逐 token 约束采样",
+         "字段、类型、必填都按 Schema 来",
+         "Schema 必须写完整（常要求 `additionalProperties: false` + 全部字段必填）；部分服务商不提供"),
     ]
     print(f"  {'协议':<22}{'实现方式':<26}{'优点':<32}{'代价'}")
     print("  " + "-" * 108)
@@ -556,8 +560,9 @@ def demo_protocol_comparison() -> None:
     for line in [
         "· 生产环境优先用**原生 Function Calling** —— 可靠性带来的收益远大于厂商绑定成本；",
         "· 需要兼容本地开源模型 / 多厂商时，用**纯文本 ReAct**，但要写足分级降级解析；",
-        "· 两者可以**同时开启**：core/real_llm.py 就是拿原生 tool_calls，再转成文本协议，",
-        "  这样上层 Agent 的解析逻辑完全不用改（适配器模式的价值）。",
+        "· 两种协议由 PromptBuilder(style=...) 切换：选 function_calling 时 core/agent.py 通过 API 的",
+        "  tools / tool_choice 下发工具规格；选 react 时工具说明走系统提示词；原生 tool_calls 会被",
+        "  core/real_llm.py 归一成同一套文本协议，**上层解析逻辑一行都不用改**（适配器模式的价值）。",
     ]:
         print(f"     {line}")
 

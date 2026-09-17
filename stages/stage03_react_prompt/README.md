@@ -213,14 +213,17 @@ if not out.tool_calls and not out.answer:
 |---|---|---|---|
 | 纯文本 ReAct | 自己写正则/分级解析 | 任何模型都能用、完全可解释、易调试 | 可靠性最低、格式说明耗 token、易解析失败 |
 | 原生 Function Calling | 解析 API 返回的 `tool_calls` 字段 | 可靠性最高、格式由厂商保证 | 绑定厂商、模型受限、调试时看不到「黑盒」决策 |
-| 约束解码 / JSON Mode | 强制模型只能输出合法 JSON | 格式 100% 合法 | 表达力受限、部分服务商不提供 |
+| JSON Mode | 强制模型输出合法 JSON（`response_format={"type":"json_object"}`） | 保证能被 `json.loads()` 解析 | **不保证字段符合你的 Schema**（可能缺字段、类型不对、枚举乱写） |
+| 严格结构化输出（strict） | 把 Schema 编译成语法，逐 token 约束采样 | 字段、类型、必填都按 Schema 来 | Schema 必须写完整（常要求 `additionalProperties: false` + 全部字段必填）；部分服务商不提供 |
 
 务实的选择：
 
 - 生产环境优先 **原生 Function Calling** —— 可靠性收益远大于厂商绑定成本。
 - 要兼容本地开源模型 / 多厂商时用 **纯文本 ReAct**，但必须写足分级降级解析。
-- **两者可以同时开启**：`core/real_llm.py` 就是拿原生 `tool_calls` 再转成文本协议，
-  这样上层 Agent 的解析逻辑完全不用改（适配器模式的价值）。
+- **两种协议由 `PromptBuilder(style=...)` 切换**。选 `"function_calling"` 时，`core/agent.py`
+  会把工具规格通过 API 的 `tools` / `tool_choice` 参数下发给模型；选 `"react"` 时工具说明走系统提示词。
+  原生返回的 `tool_calls` 会被 `core/real_llm.py` 归一成同一套文本协议，
+  所以**上层 Agent 的解析逻辑一行都不用改**（这就是适配器模式的价值）。
 
 ---
 
@@ -444,6 +447,7 @@ prompts/
 ReAct 不是万能的：
 
 - **单步任务**（分类、抽取、改写）：直接一次调用 + JSON Mode 更快更便宜。
+  但**下游若依赖字段名 / 类型 / 枚举，请换成带 strict 的严格结构化输出** —— JSON Mode 只管"能被解析"，不管"字段对不对"。
 - **需要严格确定性**的流程：用工作流/状态机（第 09 章），别让模型自由发挥。
 - **工具调用非常频繁**（每轮 10+ 次）：原生 Function Calling + 并行调用更合适。
 - **上下文极紧张**：ReAct 的格式说明本身要吃不少 token。

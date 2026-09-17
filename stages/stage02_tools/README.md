@@ -109,12 +109,14 @@ result = self.tools[name](**args)     # ← 就这么一行
 |---|---|---|
 | `properties` | 每个参数的类型与说明 | 模型不知道要传什么 |
 | `required` | 必填清单 | 模型漏填，你只能等工具报 TypeError |
-| `additionalProperties: false` | **拒绝一切未定义参数** | 模型幻觉出的 `unit`、`currency` 会被静默忽略，行为不可预测 |
-| `example` | 可直接抄的示例 | 小模型的调用正确率明显下降 |
+| `additionalProperties: false` | **拒绝一切未定义参数** | 幻觉出的 `unit`、`currency` 会一路传到 `func(**args)` 并抛 `TypeError`（原始 Python 报错，模型看不懂）；只有函数带 `**kwargs` 时才真的被静默吞掉 |
+| `example` | 可直接抄的示例（**本项目扩展字段，不是 JSON Schema 标准**；标准里的 `examples` 是数组） | 小模型的调用正确率明显下降 |
 
 > `additionalProperties: false` 是最容易被忽视、又最值钱的一条。
 > 模型非常喜欢"多加一个参数显得自己很懂"——比如查订单时顺手传 `format="json"`。
-> 不开这个开关，这些参数会被 `**args` 静默吞掉；开了，模型会收到明确的纠正信息。
+> 不开这个开关，校验**不会**拦住它：参数一路走到 `func(**args)`，运气好被 `**kwargs` 静默吞掉，
+> 运气不好抛 `TypeError` —— 而这条报错是写给 Python 程序员看的，模型看不懂（见 4.2 常见坑）。
+> 开了这个开关，问题会在**调用之前**变成一条模型能懂的纠正信息。
 
 ### 1.3 类型校验的经典陷阱：`bool` 是 `int` 的子类
 
@@ -157,7 +159,7 @@ if ok_type and bool not in py_types and isinstance(value, bool):
 | 手段 | 防的是什么 | 关键实现 |
 |---|---|---|
 | **AST 白名单** | 表达式注入（`eval` 类工具） | 只解释白名单节点，默认拒绝 |
-| **路径前缀比较** | 目录穿越（文件类工具） | `resolve()` 后比前缀，不做字符串包含判断 |
+| **目录归属判断** | 目录穿越（文件类工具） | `resolve()` 后用 `is_relative_to()` 判归属，不做字符串前缀比较 |
 | **结果截断** | 上下文被一次调用撑爆 | `max_result_chars` + 截断提示 |
 
 **为什么表达式求值绝不能用 `eval`？**
@@ -169,16 +171,37 @@ eval("__import__('os').system('rm -rf /')")   ← 真的会执行
 在 Agent 里，这个字符串的最终来源是**模型输出**，而模型输出可以被用户通过提示词注入间接控制。
 用 `eval` 等于把 shell 交给陌生人。
 
-**为什么路径检查不能用 `str.startswith` 判断字符串包含？**
+**为什么路径检查不能靠字符串判断？（这其实是两层坑）**
 
-因为攻击者可以用这些绕过：`....//`、URL 编码、Windows 的 `..\`、符号链接、绝对路径。
-唯一可靠的做法是解析成绝对路径后比较：
+**第一层：不能做"包含 `..`"这类字符串检查。**
+
+因为攻击者可以用 `....//`、URL 编码、Windows 的 `..\`、符号链接、绝对路径绕过 ——
+**路径的等价写法是无穷的**。所以必须先解析成唯一的绝对路径：
 
 ```python
-p = (root / rel).resolve()
-if not str(p).startswith(str(root.resolve())):
+p = (root / rel).resolve()      # 把 . / .. / 符号链接全部解析掉
+```
+
+**第二层：解析之后，也不能用 `str.startswith` 比前缀。**
+
+字符串前缀**不是目录边界**。root 是 `D:\ws\sandbox` 时：
+
+```
+D:\ws\sandbox_evil\x.txt        ← 兄弟目录，字符串照样以 "D:\ws\sandbox" 开头
+```
+
+所以 `../sandbox_evil/x.txt` 这种路径会被前缀检查**放行** —— 越界成功。
+（多级 `..` 逃逸反而挡得住，所以这个洞很容易在测试里漏掉。）
+
+判断"这个路径属不属于这个目录"要用路径语义，不是字符串：
+
+```python
+if not p.is_relative_to(root):                  # Python 3.9+，按路径组件判断
     raise ValueError(f"拒绝访问工作目录之外的路径: {rel}")
 ```
+
+> 等价写法：`os.path.commonpath([root, p]) == str(root)`。
+> 本项目要求 Python 3.10+，直接用 `is_relative_to()` 最清楚。
 
 ### 1.6 反直觉结论：工具不是越多越好
 
@@ -373,7 +396,7 @@ py -m stages.stage02_tools.demo --check      # 只跑自检
 
 ```
 py -m stages.stage02_tools.demo --check
-  ✅ 全部通过（23 项）
+  ✅ 全部通过（24 项）
 ```
 
 ---
@@ -386,7 +409,7 @@ py -m stages.stage02_tools.demo --check
 |---|---|---|
 | 手写 `validate()` | `pydantic` / `jsonschema` | 需要 `$ref`、`oneOf`、自定义格式（email/date-time） |
 | 手写 AST 白名单 | `simpleeval` + 进程级沙箱 | 语言级白名单防不住资源耗尽攻击 |
-| 路径前缀比较 | 容器 / chroot / 独立服务账号 | 同进程内的路径检查总有绕过风险 |
+| 目录归属判断 | 容器 / chroot / 独立服务账号 | 同进程内的路径检查总有绕过风险 |
 | 字符串截断 | 结构化摘要 + 分页读取 | 截断会丢关键信息，摘要不会 |
 
 **但是原理完全一样。** 用库的时候你必须知道它替你做了什么，否则出事时你连往哪查都不知道。
@@ -396,7 +419,7 @@ py -m stages.stage02_tools.demo --check
 | 坑 | 症状 | 解法 |
 |---|---|---|
 | 用 `eval` 实现计算器 | 被注入执行任意代码 | AST 白名单，或换 `ast.literal_eval` |
-| 忘记 `additionalProperties: false` | 模型的幻觉参数被静默吞掉 | 显式关闭 |
+| 忘记 `additionalProperties: false` | 幻觉参数一路传到函数调用才炸（TypeError 或静默吞掉） | 显式关闭 |
 | `bool` 被判为 `integer` | `{"expr": true}` 通过校验 | 特判 `isinstance(value, bool)` |
 | 错误信息直接抛给模型 | 模型看不懂 `TypeError: missing 1 required positional argument` | 转写成"缺哪个参数 + 正确用法" |
 | 工具异常向上抛 | 整轮任务崩溃 | 兜底 `except Exception` → 结构化结果 |

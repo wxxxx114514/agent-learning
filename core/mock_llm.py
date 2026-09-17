@@ -4,7 +4,7 @@
     把"不确定的大模型"替换成"确定性的假模型"，我们就能单独调试 Agent 的逻辑。
     真实项目里也一样 —— 单元测试绝对不应该调用真模型（慢、贵、不稳定）。
 
-本文件提供 6 个假模型，每个都模拟一类真实世界的问题：
+本文件提供 8 个假模型，每个都模拟一类真实世界的问题：
 
     ScriptedLLM      按剧本背台词            → 学习循环结构
     RuleBasedLLM     规则驱动的"看起来像真的" → 学习 ReAct / 多步工具
@@ -13,6 +13,7 @@
     HallucinatingLLM 调用不存在的工具        → 学习错误回灌
     LoopingLLM       永远重复同一个动作      → 学习死循环检测
     SpyLLM           记录收到的提示词        → 学习提示词工程（看上下文怎么变化）
+    HumanInLoopLLM   无法决定时暂停等人输入  → 学习 human-in-the-loop 与高危审批
 """
 
 from __future__ import annotations
