@@ -39,6 +39,9 @@ setup_console()   # Windows 控制台默认 GBK；这一步让中文和 emoji �
 # 每个结果都要 `messages.append(Message.tool_result(name, result))`。
 # --------------------------------------------------------------------------
 # 【我的代码】在下面写 👇
+import re 
+import json
+allres=re.findall()
 
 
 
